@@ -1,14 +1,2 @@
-## Autoregressive linear models
-
-### Experiments
-
-- Transformers
-    - implement gradient clipping
-
-### Next steps
-
-- Least squares in this model (rate is not dependent on _mixing time_)
-- Regime of interest: d^2 p >> N T >> d r p
-- Matrix factorization in the model side  (_stationary_)
-- Nuclear norm regularization
-- Tradeoff between T and K
+This is the official code for the paper on [Incremental Learning of Sparse Attention Patterns in Transformers](https://okyksl.github.io/slides/prigm-2025/#/1) presented at [EurIPS 2025 Workshop
+on Principles of Generative Modeling](https://sites.google.com/view/prigm-eurips-2025/home).
