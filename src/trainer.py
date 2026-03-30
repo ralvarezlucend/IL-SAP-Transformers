@@ -25,7 +25,9 @@ from src.model import (
 from src.visualizer import (
     log_attention_alignment,
     log_attention_heatmap,
+    log_attention_span_mass,
     log_attention_table,
+    log_value_alignment_scalars,
     log_value_matrix_alignment,
 )
 
@@ -459,7 +461,30 @@ class Trainer(ABC):
                         split="val",
                         stride=_stride,
                     )
+                    # Time-series scalars for tracking head collaboration:
+                    # - attention span mass: how much each head attends to
+                    #   each teacher's position group (collaborative phases)
+                    # - value alignment: how each head's value matrix aligns
+                    #   with each teacher feature (cooperative offset dynamics)
+                    log_attention_span_mass(
+                        run=self.writer,
+                        attn_avg=attn_avg,
+                        span_lengths=self.teacher.span_lengths,
+                        context_length=_ctx_len,
+                        step=step,
+                        split="val",
+                        stride=_stride,
+                    )
                     log_value_matrix_alignment(
+                        run=self.writer,
+                        teacher_matrices=self.teacher._params,
+                        student=self.student,
+                        dim=self.teacher.dim,
+                        step=step,
+                        split="val",
+                        layer=0,
+                    )
+                    log_value_alignment_scalars(
                         run=self.writer,
                         teacher_matrices=self.teacher._params,
                         student=self.student,
@@ -717,7 +742,30 @@ class SGDTrainer(Trainer):
                             split="train",
                             stride=_stride,
                         )
+                        # Time-series scalars for tracking head collaboration:
+                        # - attention span mass: how much each head attends to
+                        #   each teacher's position group (collaborative phases)
+                        # - value alignment: how each head's value matrix aligns
+                        #   with each teacher feature (cooperative offset dynamics)
+                        log_attention_span_mass(
+                            run=self.writer,
+                            attn_avg=attn_avg,
+                            span_lengths=self.teacher.span_lengths,
+                            context_length=_ctx_len,
+                            step=self.current_step,
+                            split="train",
+                            stride=_stride,
+                        )
                         log_value_matrix_alignment(
+                            run=self.writer,
+                            teacher_matrices=self.teacher._params,
+                            student=self.student,
+                            dim=self.teacher.dim,
+                            step=self.current_step,
+                            split="train",
+                            layer=0,
+                        )
+                        log_value_alignment_scalars(
                             run=self.writer,
                             teacher_matrices=self.teacher._params,
                             student=self.student,

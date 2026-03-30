@@ -5,7 +5,11 @@ Provides two independent representations:
 * `log_attention_heatmap` – static per-head heatmaps logged as wandb.Images
 * `compute_gt_attention_row` – ground-truth uniform attention distribution per head
 * `log_value_matrix_alignment` – per-head cosine similarity of value weights vs. teacher
+* `log_value_alignment_scalars` – per-(head, teacher) value alignment as wandb scalars
+    for time-series plotting of cooperative offset dynamics (Section 3.3)
 * `log_attention_alignment` – per-head attention alignment scalars and bar charts
+* `log_attention_span_mass` – per-(head, span) attention mass as wandb scalars
+    for time-series plotting of collaborative head specialization phases
 
 Use `log_attention` as a wrapper when you want either or both attention functions.
 """
@@ -400,6 +404,96 @@ def log_value_matrix_alignment(
     run.log(log_dict, step=step)
 
 
+def log_value_alignment_scalars(
+    run: Optional["wandb.run"],
+    teacher_matrices: torch.Tensor,
+    student: torch.nn.Module,
+    dim: int,
+    step: int,
+    split: str,
+    layer: int = 0,
+) -> None:
+    """Log per-(head, teacher) value matrix alignment as wandb scalars.
+
+    Goal: Track the cooperative offset dynamics described in Section 3.3.
+    When one head starts aligning its value matrix with a teacher feature,
+    other heads may temporarily develop *negative* alignment along that same
+    direction to cancel cross-terms — a cooperative correction mechanism.
+
+    For every (student head h, teacher matrix k) pair, logs:
+      - ``{split}_value_cosine_head{h}_teacher{k}``:
+            Frobenius cosine similarity (direction only, range [-1, 1]).
+      - ``{split}_value_inner_head{h}_teacher{k}``:
+            Raw Frobenius inner product <V_h, A*_k>.  Scales with dim²;
+            use the cosine variant for normalized comparison.
+
+    wandb visualization: group by *teacher* (feature) to get one panel per
+    feature direction with lines per head — matching the paper's figure.
+      - Feature (j) panel: ``{split}_value_inner_head*_teacher{j}``
+
+    Only operates when attention_disentanglement=True.
+
+    Args:
+        run: Active wandb run (skipped if None)
+        teacher_matrices: shape (window, dim, dim) — teacher._params (A*_k)
+        student: TransformerDecoder instance
+        dim: data / vocabulary dimensionality (not embed_dim)
+        step: training step
+        split: "train" or "val"
+        layer: which transformer block to inspect (default 0)
+    """
+    if run is None:
+        return
+
+    block = student.transformer_blocks[layer]
+    mha = block.self_attention
+
+    if not getattr(mha, "attention_disentanglement", False):
+        return
+    if not isinstance(mha.value_proj, nn.ModuleList):
+        return
+
+    teacher_np = teacher_matrices.detach().cpu().numpy()  # (num_teacher, dim, dim)
+    num_teacher = teacher_np.shape[0]
+    num_heads = len(mha.value_proj)
+
+    # Flatten each teacher matrix A*_k to a vector for dot-product computation.
+    teacher_flat = [teacher_np[k].ravel() for k in range(num_teacher)]
+    teacher_norms = [float(np.linalg.norm(a)) for a in teacher_flat]
+
+    # Extract the effective (dim, dim) sub-block of each head's value projection.
+    student_flat: List[Optional[np.ndarray]] = []
+    student_norms: List[float] = []
+    for h in range(num_heads):
+        vp = mha.value_proj[h]
+        if not isinstance(vp, nn.Linear):
+            student_flat.append(None)
+            student_norms.append(0.0)
+            continue
+        W = vp.weight.detach().cpu().numpy()[:dim, :dim].ravel()
+        student_flat.append(W)
+        student_norms.append(float(np.linalg.norm(W)))
+
+    # Compute all-pairs alignment and log as individual scalars.
+    log_dict: dict = {}
+    for h in range(num_heads):
+        w = student_flat[h]
+        w_norm = student_norms[h]
+        if w is None or w_norm == 0:
+            continue
+        for k in range(num_teacher):
+            a = teacher_flat[k]
+            a_norm = teacher_norms[k]
+            # Raw Frobenius inner product: <V_h, A*_k> = sum_ij V_h[i,j] * A*_k[i,j]
+            inner = float(np.dot(w, a))
+            # Cosine similarity: normalized to [-1, 1]
+            cos = inner / (w_norm * a_norm) if a_norm > 0 else 0.0
+            log_dict[f"{split}_value_cosine_head{h}_teacher{k}"] = cos
+            log_dict[f"{split}_value_inner_head{h}_teacher{k}"] = inner
+
+    run.log(log_dict, step=step)
+
+
 def log_attention_alignment(
     run: Optional["wandb.run"],
     attn_avg: np.ndarray,
@@ -533,4 +627,73 @@ def log_attention_alignment(
         plt.close(fig)
 
     log_dict[f"{split}_attn_offset_charts"] = bar_images
+    run.log(log_dict, step=step)
+
+
+def log_attention_span_mass(
+    run: Optional["wandb.run"],
+    attn_avg: np.ndarray,
+    span_lengths: List[int],
+    context_length: int,
+    step: int,
+    split: str,
+    stride: Optional[int] = None,
+) -> None:
+    """Log the total attention mass each head places on each span's positions.
+
+    Goal: Track the collaborative phases of head specialization.  Early in
+    training all heads converge on the most statistically important position
+    group; then heads sequentially break away to cover the remaining groups.
+    Plotting these scalars over training steps (with log-scale axes) reveals
+    the stage transitions clearly.
+
+    For each (head h, span k) pair, computes:
+        sum of attn_avg[h, last_query, positions_in_span_k]
+    i.e. the total attention the last token places on span k's positions,
+    averaged across all sequences in the batch.
+
+    Logged as wandb scalars ``{split}_attn_mass_head{h}_span{k}``.
+
+    wandb visualization: group by *span* to get one panel per position group
+    with lines per head — matching the paper's attention position weight figure.
+      - Position (j) panel: ``{split}_attn_mass_head*_span{j}``
+    Use log scale on both axes to see the stage separation.
+
+    Args:
+        run: Active wandb run (skipped if None)
+        attn_avg: batch-averaged attention, shape (num_heads, seq_len, seq_len)
+        span_lengths: per-span lengths (length == num GT spans)
+        context_length: total context window length
+        step: training step
+        split: "train" or "val"
+        stride: stride between spans (None = non-overlapping)
+    """
+    if run is None:
+        return
+
+    num_heads, seq_len, _ = attn_avg.shape
+    num_spans = len(span_lengths)
+
+    # Last-query attention row per head: shape (num_heads, seq_len).
+    last_rows = attn_avg[:, -1, :]
+
+    # Determine where the context window starts in the sequence.
+    context_start = seq_len - context_length
+
+    log_dict: dict = {}
+    for k in range(num_spans):
+        # Locate span k's positions within the context window.
+        if stride is not None:
+            span_start_in_context = k * stride
+        else:
+            span_start_in_context = sum(span_lengths[:k])
+
+        abs_start = max(0, context_start + span_start_in_context)
+        abs_end = min(seq_len, abs_start + span_lengths[k])
+
+        # Sum attention mass over this span's positions for each head.
+        for h in range(num_heads):
+            mass = float(last_rows[h, abs_start:abs_end].sum())
+            log_dict[f"{split}_attn_mass_head{h}_span{k}"] = mass
+
     run.log(log_dict, step=step)

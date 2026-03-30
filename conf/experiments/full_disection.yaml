@@ -12,5 +12,9 @@ student:
   identity_decoder: true
   attention_bias: false
 
+misc:
+  wandb:
+    tags: ["ICML-minimal"]
+
 optimizer:
   lr: 0.08
