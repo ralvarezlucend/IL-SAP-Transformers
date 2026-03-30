@@ -241,6 +241,40 @@ def compute_gt_attention_row(
     return gt
 
 
+def _heatmap_image(
+    matrix: np.ndarray,
+    row_labels: List[str],
+    col_labels: List[str],
+    title: str,
+    xlabel: str = "",
+    ylabel: str = "Student head",
+    cmap: str = "RdBu_r",
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+) -> wandb.Image:
+    """Render a 2-D numpy array as a seaborn heatmap and return a wandb.Image."""
+    fig, ax = plt.subplots(figsize=(max(4, len(col_labels)), max(3, len(row_labels))))
+    sns.heatmap(
+        matrix,
+        ax=ax,
+        cmap=cmap,
+        vmin=vmin,
+        vmax=vmax,
+        annot=True,
+        fmt=".2f",
+        xticklabels=col_labels,
+        yticklabels=row_labels,
+        linewidths=0.5,
+    )
+    ax.set_title(title)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    plt.tight_layout()
+    img = wandb.Image(fig)
+    plt.close(fig)
+    return img
+
+
 def log_value_matrix_alignment(
     run: Optional["wandb.run"],
     teacher_matrices: torch.Tensor,
@@ -250,16 +284,27 @@ def log_value_matrix_alignment(
     split: str,
     layer: int = 0,
 ) -> None:
-    """Log per-head cosine similarity between student value projections and teacher matrices.
+    """Log all-pairs alignment between student value projections and teacher matrices.
 
-    Operates only when the student block uses attention_disentanglement=True so that
-    each head has its own nn.Linear value projection.  The effective (dim, dim) sub-block
-    of each value weight is compared to the corresponding teacher matrix via the
-    Frobenius inner product cosine similarity.
+    For every (student head h, teacher matrix k) pair this computes:
+      - cos_sim(h, k): Frobenius cosine similarity between the effective (dim, dim)
+        sub-block of value_proj[h].weight and teacher_matrices[k].
+      - proj_norm(h, k): norm of the student matrix projected onto the teacher
+        direction = ||W_h||_F * cos_sim(h, k).  This captures how much of the
+        student's capacity is aligned with each teacher matrix.
+      - student_norm(h): ||W_h||_F, the overall scale of the student value matrix.
+
+    Logs:
+      - Scalars {split}_value_student_norm_head{h} for each head.
+      - Heatmap image {split}_value_cosine_sim: (num_heads × num_teacher), range [-1, 1].
+      - Heatmap image {split}_value_proj_norm: (num_heads × num_teacher).
+
+    Only operates when attention_disentanglement=True (each head has its own nn.Linear
+    value projection).
 
     Args:
         run: Active wandb run (skipped if None)
-        teacher_matrices: shape (window, dim, dim) — teacher._params (may be on any device)
+        teacher_matrices: shape (window, dim, dim) — teacher._params
         student: TransformerDecoder instance
         dim: data / vocabulary dimensionality (not embed_dim)
         step: training step
@@ -277,31 +322,82 @@ def log_value_matrix_alignment(
     if not isinstance(mha.value_proj, nn.ModuleList):
         return
 
-    teacher_np = teacher_matrices.detach().cpu().numpy()  # (window, dim, dim)
+    teacher_np = teacher_matrices.detach().cpu().numpy()  # (num_teacher, dim, dim)
     num_teacher = teacher_np.shape[0]
     num_heads = len(mha.value_proj)
 
-    log_dict = {}
-    for h in range(min(num_heads, num_teacher)):
+    # Pre-compute flattened teacher vectors and their norms.
+    teacher_flat = [teacher_np[k].ravel() for k in range(num_teacher)]
+    teacher_norms = [float(np.linalg.norm(a)) for a in teacher_flat]
+
+    # Collect student matrices and their norms.
+    student_flat: List[Optional[np.ndarray]] = []
+    student_norms: List[float] = []
+    for h in range(num_heads):
         vp = mha.value_proj[h]
         if not isinstance(vp, nn.Linear):
+            student_flat.append(None)
+            student_norms.append(0.0)
             continue
+        # Effective (dim, dim) block: identity decoder keeps first `dim` rows;
+        # token embedding occupies first `dim` columns.
+        W = vp.weight.detach().cpu().numpy()[:dim, :dim].ravel()
+        student_flat.append(W)
+        student_norms.append(float(np.linalg.norm(W)))
 
-        # Effective (dim, dim) block: decoder keeps first `dim` rows, token
-        # embedding occupies first `dim` columns of the value weight.
-        W = vp.weight.detach().cpu().numpy()[:dim, :dim]  # (dim, dim)
-        A = teacher_np[h]                                   # (dim, dim)
+    # Build all-pairs matrices.
+    cos_sim_mat = np.zeros((num_heads, num_teacher), dtype=np.float32)
+    proj_norm_mat = np.zeros((num_heads, num_teacher), dtype=np.float32)
 
-        w_flat = W.ravel()
-        a_flat = A.ravel()
-        w_norm = float(np.linalg.norm(w_flat))
-        a_norm = float(np.linalg.norm(a_flat))
+    for h in range(num_heads):
+        w = student_flat[h]
+        w_norm = student_norms[h]
+        if w is None or w_norm == 0:
+            continue
+        for k in range(num_teacher):
+            a = teacher_flat[k]
+            a_norm = teacher_norms[k]
+            if a_norm == 0:
+                continue
+            cos = float(np.dot(w, a) / (w_norm * a_norm))
+            cos_sim_mat[h, k] = cos
+            proj_norm_mat[h, k] = w_norm * cos  # signed projection norm
 
-        cos_sim = float(np.dot(w_flat, a_flat) / (w_norm * a_norm)) if (w_norm > 0 and a_norm > 0) else 0.0
-        log_dict[f"{split}_value_cosine_sim_head{h}"] = cos_sim
+    row_labels = [f"Head {h}" for h in range(num_heads)]
+    col_labels = [f"Teacher {k}" for k in range(num_teacher)]
 
-    if log_dict:
-        run.log(log_dict, step=step)
+    log_dict: dict = {}
+
+    # Per-head student norms as scalars.
+    for h, norm in enumerate(student_norms):
+        log_dict[f"{split}_value_student_norm_head{h}"] = norm
+
+    # Heatmap: cosine similarity (all pairs).
+    log_dict[f"{split}_value_cosine_sim"] = _heatmap_image(
+        cos_sim_mat,
+        row_labels,
+        col_labels,
+        title=f"Value matrix cosine similarity ({split}, step {step})",
+        xlabel="Teacher matrix",
+        cmap="RdBu_r",
+        vmin=-1.0,
+        vmax=1.0,
+    )
+
+    # Heatmap: projected norm (all pairs).
+    abs_max = float(np.abs(proj_norm_mat).max()) or 1.0
+    log_dict[f"{split}_value_proj_norm"] = _heatmap_image(
+        proj_norm_mat,
+        row_labels,
+        col_labels,
+        title=f"Value matrix projected norm ({split}, step {step})",
+        xlabel="Teacher matrix",
+        cmap="RdBu_r",
+        vmin=-abs_max,
+        vmax=abs_max,
+    )
+
+    run.log(log_dict, step=step)
 
 
 def log_attention_alignment(
@@ -313,17 +409,25 @@ def log_attention_alignment(
     split: str,
     stride: Optional[int] = None,
 ) -> None:
-    """Log alignment between the last-query attention row and the GT span distribution.
+    """Log all-pairs alignment between student attention rows and GT span distributions.
 
-    For each head h, compares attn_avg[h, -1, :] (the last query's attention
-    distribution) against the ground-truth uniform distribution over span h.
-    Logs per-head cosine similarity and L1 distance scalars, plus a grouped
-    bar chart image showing predicted vs GT weights restricted to the context window.
+    For every (student head h, GT span k) pair this computes:
+      - cos_sim(h, k): cosine similarity between the last-query attention row of head h
+        and the ground-truth uniform distribution over span k.
+      - proj_norm(h, k): norm of the student attention row projected onto the GT span
+        direction = ||attn_h||_2 * cos_sim(h, k).
+
+    Logs:
+      - Scalars {split}_attn_student_norm_head{h} for each head.
+      - Heatmap image {split}_attn_cosine_sim: (num_heads × num_spans).
+      - Heatmap image {split}_attn_proj_norm: (num_heads × num_spans).
+      - Per-head bar charts {split}_attn_offset_charts comparing the last-query
+        attention row of each head against every GT span (zoomed to context window).
 
     Args:
         run: Active wandb run (skipped if None)
         attn_avg: batch-averaged attention, shape (num_heads, seq_len, seq_len)
-        span_lengths: per-head span lengths
+        span_lengths: per-span lengths (length == num GT spans)
         context_length: total context window length
         step: training step
         split: "train" or "val"
@@ -333,43 +437,100 @@ def log_attention_alignment(
         return
 
     num_heads, seq_len, _ = attn_avg.shape
-    gt = compute_gt_attention_row(span_lengths, context_length, seq_len, stride=stride)
-    # gt shape: (num_heads, seq_len)
+    num_spans = len(span_lengths)
 
-    log_dict: dict = {}
-    images: List[wandb.Image] = []
+    # Ground-truth rows: shape (num_spans, seq_len).
+    gt = compute_gt_attention_row(span_lengths, context_length, seq_len, stride=stride)
+
+    # Last-query attention row per head: shape (num_heads, seq_len).
+    last_rows = attn_avg[:, -1, :]
+    student_norms = [float(np.linalg.norm(last_rows[h])) for h in range(num_heads)]
+
+    gt_flat = [gt[k] for k in range(num_spans)]
+    gt_norms = [float(np.linalg.norm(g)) for g in gt_flat]
+
+    # All-pairs cosine similarity and projected norm.
+    cos_sim_mat = np.zeros((num_heads, num_spans), dtype=np.float32)
+    proj_norm_mat = np.zeros((num_heads, num_spans), dtype=np.float32)
 
     for h in range(num_heads):
-        pred_row = attn_avg[h, -1, :]  # (seq_len,) — last query position
-        gt_row = gt[h] if h < len(span_lengths) else np.zeros(seq_len, dtype=np.float32)
+        pred = last_rows[h]
+        p_norm = student_norms[h]
+        if p_norm == 0:
+            continue
+        for k in range(num_spans):
+            g_norm = gt_norms[k]
+            if g_norm == 0:
+                continue
+            cos = float(np.dot(pred, gt_flat[k]) / (p_norm * g_norm))
+            cos_sim_mat[h, k] = cos
+            proj_norm_mat[h, k] = p_norm * cos  # signed projection norm
 
-        pred_norm = float(np.linalg.norm(pred_row))
-        gt_norm = float(np.linalg.norm(gt_row))
+    row_labels = [f"Head {h}" for h in range(num_heads)]
+    col_labels = [f"Span {k}" for k in range(num_spans)]
 
-        cos_sim = float(np.dot(pred_row, gt_row) / (pred_norm * gt_norm)) if (pred_norm > 0 and gt_norm > 0) else 0.0
-        l1_dist = float(np.sum(np.abs(pred_row - gt_row)))
+    log_dict: dict = {}
 
-        log_dict[f"{split}_attn_alignment_cos_head{h}"] = cos_sim
-        log_dict[f"{split}_attn_alignment_l1_head{h}"] = l1_dist
+    # Per-head student norms as scalars.
+    for h, norm in enumerate(student_norms):
+        log_dict[f"{split}_attn_student_norm_head{h}"] = norm
 
-        # Bar chart: zoom in on the context window for readability.
-        context_start = max(0, seq_len - context_length)
-        positions = np.arange(context_start, seq_len)
-        pred_ctx = pred_row[context_start:]
-        gt_ctx = gt_row[context_start:]
+    # Heatmap: cosine similarity (all pairs).
+    log_dict[f"{split}_attn_cosine_sim"] = _heatmap_image(
+        cos_sim_mat,
+        row_labels,
+        col_labels,
+        title=f"Attention cosine similarity ({split}, step {step})",
+        xlabel="GT span",
+        cmap="RdBu_r",
+        vmin=-1.0,
+        vmax=1.0,
+    )
 
-        fig, ax = plt.subplots(figsize=(max(6, len(positions) // 2), 3))
-        width = 0.4
-        ax.bar(positions - width / 2, pred_ctx, width=width, label="Student", color="steelblue")
-        ax.bar(positions + width / 2, gt_ctx, width=width, label="GT", color="coral", alpha=0.8)
-        ax.set_title(f"Head {h} — last-query attention ({split}, step {step})")
-        ax.set_xlabel("Key position (context window)")
-        ax.set_ylabel("Attention weight")
-        ax.legend(fontsize=8)
-        ax.set_xlim(context_start - 0.5, seq_len - 0.5)
+    # Heatmap: projected norm (all pairs).
+    abs_max = float(np.abs(proj_norm_mat).max()) or 1.0
+    log_dict[f"{split}_attn_proj_norm"] = _heatmap_image(
+        proj_norm_mat,
+        row_labels,
+        col_labels,
+        title=f"Attention projected norm ({split}, step {step})",
+        xlabel="GT span",
+        cmap="RdBu_r",
+        vmin=-abs_max,
+        vmax=abs_max,
+    )
+
+    # Per-head bar charts: head h's last-query row vs every GT span.
+    context_start = max(0, seq_len - context_length)
+    positions = np.arange(context_start, seq_len)
+    bar_images: List[wandb.Image] = []
+
+    for h in range(num_heads):
+        pred_ctx = last_rows[h, context_start:]
+        n_cols = num_spans + 1
+        fig, axes = plt.subplots(1, n_cols, figsize=(3 * n_cols, 3), sharey=True)
+        if n_cols == 1:
+            axes = [axes]
+
+        # Student attention.
+        axes[0].bar(positions, pred_ctx, color="steelblue")
+        axes[0].set_title(f"Head {h}\n(student)", fontsize=9)
+        axes[0].set_xlabel("Key pos")
+        axes[0].set_ylabel("Weight")
+
+        # One subplot per GT span.
+        for k in range(num_spans):
+            gt_ctx = gt[k, context_start:]
+            axes[k + 1].bar(positions, gt_ctx, color="coral", alpha=0.8)
+            axes[k + 1].set_title(
+                f"GT span {k}\ncos={cos_sim_mat[h, k]:.2f}", fontsize=9
+            )
+            axes[k + 1].set_xlabel("Key pos")
+
+        fig.suptitle(f"Head {h} — last-query attention ({split}, step {step})", fontsize=10)
         plt.tight_layout()
-        images.append(wandb.Image(fig, caption=f"Head {h}"))
+        bar_images.append(wandb.Image(fig, caption=f"Head {h}"))
         plt.close(fig)
 
-    log_dict[f"{split}_attn_alignment_charts"] = images
+    log_dict[f"{split}_attn_offset_charts"] = bar_images
     run.log(log_dict, step=step)
