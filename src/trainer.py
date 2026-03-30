@@ -22,7 +22,12 @@ from src.model import (
     LinearARModel,
     TransformerDecoder,
 )
-from src.visualizer import log_attention_heatmap, log_attention_table
+from src.visualizer import (
+    log_attention_alignment,
+    log_attention_heatmap,
+    log_attention_table,
+    log_value_matrix_alignment,
+)
 
 
 class Trainer(ABC):
@@ -439,6 +444,31 @@ class Trainer(ABC):
                     step=step,
                 )
 
+                # Alignment: value matrix and attention pattern vs. ground truth
+                if isinstance(self.teacher, LinearARModel):
+                    _stride = getattr(self.teacher, "stride", None)
+                    _ctx_len = getattr(
+                        self.teacher, "context_length", sum(self.teacher.span_lengths)
+                    )
+                    log_attention_alignment(
+                        run=self.writer,
+                        attn_avg=attn_avg,
+                        span_lengths=self.teacher.span_lengths,
+                        context_length=_ctx_len,
+                        step=step,
+                        split="val",
+                        stride=_stride,
+                    )
+                    log_value_matrix_alignment(
+                        run=self.writer,
+                        teacher_matrices=self.teacher._params,
+                        student=self.student,
+                        dim=self.teacher.dim,
+                        step=step,
+                        split="val",
+                        layer=0,
+                    )
+
     def _end_step(self, step: int, step_time: float, ngram: bool = False) -> None:
         self.logger.info(self._step_str(step, step_time, ngram))
 
@@ -671,6 +701,31 @@ class SGDTrainer(Trainer):
                         log_key="train_attention_heatmaps",
                         step=self.current_step,
                     )
+
+                    # Alignment: value matrix and attention pattern vs. ground truth
+                    if isinstance(self.teacher, LinearARModel):
+                        _stride = getattr(self.teacher, "stride", None)
+                        _ctx_len = getattr(
+                            self.teacher, "context_length", sum(self.teacher.span_lengths)
+                        )
+                        log_attention_alignment(
+                            run=self.writer,
+                            attn_avg=attn_avg,
+                            span_lengths=self.teacher.span_lengths,
+                            context_length=_ctx_len,
+                            step=self.current_step,
+                            split="train",
+                            stride=_stride,
+                        )
+                        log_value_matrix_alignment(
+                            run=self.writer,
+                            teacher_matrices=self.teacher._params,
+                            student=self.student,
+                            dim=self.teacher.dim,
+                            step=self.current_step,
+                            split="train",
+                            layer=0,
+                        )
 
                 # Reset for next iteration
                 train_attn_weights = []
