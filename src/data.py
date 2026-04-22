@@ -157,9 +157,6 @@ class ARClassification(ARRegression, ABC):
         self.one_hot = one_hot
         self.random_sampling = random_sampling
 
-        assert not (self.refresh_samples and not self.one_hot), (
-            "Use `one_hot` with `refresh_samples`!"
-        )
         super().__init__(
             teacher=teacher,
             window=window,
@@ -171,6 +168,10 @@ class ARClassification(ARRegression, ABC):
             random_sampling=random_sampling,
             use_full_prefix=use_full_prefix,
             replicate_context_for_spans=replicate_context_for_spans,
+        )
+
+        assert not (self.refresh_sequences and not self.one_hot), (
+            "Use `one_hot` with refreshed sequences (number < 0)!"
         )
 
     def _sampling_model(self, embedding: torch.Tensor) -> torch.Tensor:
@@ -221,6 +222,7 @@ class HierarchicalARClassification(ARClassification):
         random_sampling: bool = False,
         use_full_prefix: bool = False,
         replicate_context_for_spans: bool = True,
+        stochastic_emission: bool = False,
     ) -> None:
         if chunk_size <= 0:
             raise ValueError("chunk_size must be a positive integer.")
@@ -249,6 +251,7 @@ class HierarchicalARClassification(ARClassification):
 
         self.chunk_dim = chunk_dim
         self.chunk_size = chunk_size
+        self.stochastic_emission = stochastic_emission
         self._chunks = self._generate_unique_chunks()
 
     def __getitem__(self, index: int) -> torch.Tensor:
@@ -273,7 +276,16 @@ class HierarchicalARClassification(ARClassification):
 
         token_ids = torch.argmax(flattened, dim=-1)
 
-        chunks = self._chunks.to(original_device)[token_ids]
+        vocab_per_h = self._chunks.to(original_device)[token_ids]
+        if self.stochastic_emission:
+            slots = torch.randint(
+                0, self.chunk_size, vocab_per_h.shape[:2], device=original_device
+            )
+            chunks = vocab_per_h.gather(
+                1, slots.unsqueeze(-1).expand(-1, -1, self.chunk_dim)
+            )
+        else:
+            chunks = vocab_per_h
         prefix_shape = tensor.shape[:-1]
         chunks = chunks.view(*prefix_shape, self.chunk_size, self.chunk_dim)
 
@@ -426,6 +438,7 @@ class HierarchicalGaussianARClassification(
         random_sampling: bool = False,
         use_full_prefix: bool = False,
         replicate_context_for_spans: bool = True,
+        stochastic_emission: bool = False,
     ) -> None:
         """Hierarchical autoregressive dataset with Gaussian noise on teacher outputs."""
         if not one_hot:
@@ -450,4 +463,5 @@ class HierarchicalGaussianARClassification(
             random_sampling=random_sampling,
             use_full_prefix=use_full_prefix,
             replicate_context_for_spans=replicate_context_for_spans,
+            stochastic_emission=stochastic_emission,
         )
