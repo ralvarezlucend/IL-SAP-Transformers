@@ -5,6 +5,10 @@ This folder contains cleaned notebooks for reproducing the plots in the report
 the W&B tag or run ID used, and a short explanation of how the plot relates to
 the paper.
 
+Most paper plots in this folder are pulled from the W&B project
+`r-alvarezlucendo16/incremental-learning` and regenerated locally by the
+corresponding notebook.
+
 ## Figure Map
 
 | Report figure | Notebook | Source |
