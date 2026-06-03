@@ -21,12 +21,19 @@ the paper.
 | Figures 13-14 | `fig13-14-non-uniform-alpha.ipynb` | W&B tag `non-uniform-span-weights`, run `mgj8u2o3` |
 | Figures 15-17 | `fig15-17-overlapping-intervals.ipynb` | W&B tag `overlapping-spans`, runs `c9pd8yft`, `d5w941d1` |
 | Figures 18-19 | `fig18-19-sgd.ipynb` | W&B tag `sgd-full-1layer`, run `m0qjhj8n` |
+| ICML rebuttal Figure B | `figB-rebuttal-head-dynamics.ipynb` | W&B tag `ICML-minimal-transformer-small-init-orthogonal`, run `05c1tr5d` |
 
 ## Utilities
 
 - `utils.py` centralizes W&B fetching and plotting helpers.
 - `fetch_runs()` and `fetch_run_data()` use the default project
   `r-alvarezlucendo16/incremental-learning`.
+- `REPORT_HEAD_COLORS` and `report_head_color_map()` keep colored heads in the
+  report order: blue, yellow, green. Pass raw W&B head indices to
+  `report_head_color_map()` in that order whenever a run needs a permutation.
+- `style_report_axis()` applies the report's clean curve-plot style: large axis
+  labels and ticks, framed legends, and no grid unless a specific figure calls
+  for one.
 - `plot_combined_heads()` accepts either a bare run ID or the full W&B artifact
   path `run-<id>-val_attention_weights`.
 - `plot_separated_heads()` is used for the overlapping-interval appendix

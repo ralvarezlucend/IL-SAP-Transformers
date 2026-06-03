@@ -22,6 +22,58 @@ from matplotlib.patches import Rectangle
 DEFAULT_ENTITY = "r-alvarezlucendo16"
 DEFAULT_PROJECT = "incremental-learning"
 
+REPORT_BLUE = "#1f77b4"
+REPORT_YELLOW = "#ff7f0e"
+REPORT_GREEN = "#2ca02c"
+REPORT_RED = "#d62728"
+REPORT_PURPLE = "#9467bd"
+
+REPORT_HEAD_COLORS = [REPORT_BLUE, REPORT_YELLOW, REPORT_GREEN]
+REPORT_HEAD_COLORS_WITH_EXTRAS = REPORT_HEAD_COLORS + [REPORT_PURPLE]
+REPORT_LINEWIDTH = 3
+REPORT_AXIS_LABEL_SIZE = 24
+REPORT_TICK_LABEL_SIZE = 18
+REPORT_LEGEND_SIZE = 18
+REPORT_TITLE_SIZE = 20
+
+
+def report_head_color_map(head_order: Sequence[int]) -> Dict[int, str]:
+    """Map raw W&B head indices into the report's blue, yellow, green order."""
+    if len(head_order) > len(REPORT_HEAD_COLORS_WITH_EXTRAS):
+        raise ValueError(
+            f"Only {len(REPORT_HEAD_COLORS_WITH_EXTRAS)} report colors are defined, "
+            f"got {len(head_order)} heads."
+        )
+    return {
+        head_idx: REPORT_HEAD_COLORS_WITH_EXTRAS[color_idx]
+        for color_idx, head_idx in enumerate(head_order)
+    }
+
+
+def style_report_axis(
+    ax: plt.Axes,
+    xlabel: Optional[str] = None,
+    ylabel: Optional[str] = None,
+    title: Optional[str] = None,
+    grid: bool = False,
+    legend: bool = False,
+    legend_kwargs: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Apply the report's clean Matplotlib style to a single axis."""
+    if xlabel is not None:
+        ax.set_xlabel(xlabel, fontsize=REPORT_AXIS_LABEL_SIZE)
+    if ylabel is not None:
+        ax.set_ylabel(ylabel, fontsize=REPORT_AXIS_LABEL_SIZE)
+    if title is not None:
+        ax.set_title(title, fontsize=REPORT_TITLE_SIZE)
+    ax.grid(grid)
+    ax.tick_params(labelsize=REPORT_TICK_LABEL_SIZE)
+    if legend:
+        kwargs = {"fontsize": REPORT_LEGEND_SIZE, "frameon": True}
+        if legend_kwargs:
+            kwargs.update(legend_kwargs)
+        ax.legend(**kwargs)
+
 
 def _attention_artifact_path(artifact_path_or_run_id: str) -> str:
     """Accept either a W&B attention artifact path or a bare run id."""
@@ -165,7 +217,14 @@ def differing_config(
     id_cols = [run_id_col, run_name_col]
     per_run = df.groupby(id_cols, dropna=False)[cfg_cols].first().reset_index()
 
-    varying_cols = per_run[cfg_cols].nunique(dropna=False)
+    comparable_cfg = per_run[cfg_cols].apply(
+        lambda col: col.map(
+            lambda value: json.dumps(value, sort_keys=True)
+            if isinstance(value, (dict, list))
+            else value
+        )
+    )
+    varying_cols = comparable_cfg.nunique(dropna=False)
     varying_cols = list(varying_cols.index[varying_cols > 1])
 
     return per_run[id_cols + varying_cols] if varying_cols else per_run[id_cols]
@@ -216,7 +275,7 @@ def plot_combined_heads(
     if n_cols == 1:
         axes = [axes]
 
-    colors = ["#2ca02c", "#ff7f0e", "#1f77b4"]  # Green, Orange, Blue
+    colors = [REPORT_GREEN, REPORT_YELLOW, REPORT_BLUE]
 
     for col_idx, display_step in enumerate(steps):
         artifact_step = display_step // frequency
@@ -306,7 +365,7 @@ def plot_separated_heads(
     elif n_cols == 1:
         axes = axes[:, np.newaxis]
 
-    default_colors = ["#2ca02c", "#ff7f0e", "#1f77b4", "#d62728"]
+    default_colors = [REPORT_GREEN, REPORT_YELLOW, REPORT_BLUE, REPORT_PURPLE]
     colors_map = head_colors or {
         head: default_colors[i % len(default_colors)] for i, head in enumerate(head_indices)
     }
@@ -396,7 +455,7 @@ def plot_combined_heads_individual(
     fig, ax = plt.subplots(1, 1, figsize=(12, 12))
 
     df = get_table(artifact_path, step, split=split, entity=entity, project=project)
-    colors = ("#2ca02c", "#1f77b4", "#ff7f0e")
+    colors = (REPORT_GREEN, REPORT_BLUE, REPORT_YELLOW)
 
     head_indices = sorted(df["head"].unique())
     head_colors = {
@@ -497,7 +556,7 @@ def plot_kl_divergence_simple(
     plt.xlim(x_min, x_max)
 
     if divergence_steps and len(divergence_steps) >= 2:
-        strategy_colors = ["#1f77b4", "#ff7f0e", "#2ca02c"]
+        strategy_colors = REPORT_HEAD_COLORS
         adjusted_steps = [s - step_shift for s in divergence_steps] if step_shift else divergence_steps
 
         x_range = x_max - x_min
@@ -512,12 +571,9 @@ def plot_kl_divergence_simple(
         if metric in df.columns:
             plt.plot(plot_df["_step"], plot_df[metric], label=label, linewidth=4)
 
-    plt.xlabel("Training Step", fontsize=30)
-    plt.ylabel("KL Divergence", fontsize=30)
-    plt.legend(fontsize=32, loc="upper right", framealpha=1)
-    plt.xticks(fontsize=26)
-    plt.yticks(fontsize=26)
-    plt.grid(True, alpha=0.3)
+    ax = plt.gca()
+    style_report_axis(ax, xlabel="Training Step", ylabel="KL Divergence")
+    ax.legend(fontsize=REPORT_LEGEND_SIZE, loc="upper right", framealpha=1)
     plt.tight_layout()
 
     _save_or_show(plt.gcf(), save_name)
@@ -546,7 +602,7 @@ def plot_val_loss_simple(
     plt.margins(x=0)
 
     if divergence_steps and len(divergence_steps) >= 2:
-        strategy_colors = ["#1f77b4", "#ff7f0e", "#2ca02c"]
+        strategy_colors = REPORT_HEAD_COLORS
         adjusted_steps = [s - step_shift for s in divergence_steps] if step_shift else divergence_steps
 
         x_min, x_max = plot_df["_step"].min(), plot_df["_step"].max()
@@ -561,16 +617,19 @@ def plot_val_loss_simple(
     if "val_loss" in plot_df.columns:
         plt.plot(plot_df["_step"], plot_df["val_loss"], linewidth=2, color="black")
 
-    plt.xlabel("Training Step", fontsize=30)
-    plt.ylabel("Loss", fontsize=30)
-    plt.grid(True, alpha=0.3)
-    plt.xticks(fontsize=26)
-    plt.yticks(fontsize=26)
+    ax = plt.gca()
+    style_report_axis(ax, xlabel="Training Step", ylabel="Loss")
 
     if divergence_steps and len(divergence_steps) >= 2:
         strategy_labels = [r"$A^*_1$", r"$A^*_{1:2}$", r"$A^*_{1:3}$"]
         legend_patches = [Rectangle((0, 0), 1, 1, facecolor=c, alpha=0.2) for c in strategy_colors]
-        plt.legend(legend_patches, strategy_labels, fontsize=32, loc="upper right", framealpha=1)
+        ax.legend(
+            legend_patches,
+            strategy_labels,
+            fontsize=REPORT_LEGEND_SIZE,
+            loc="upper right",
+            framealpha=1,
+        )
 
     plt.tight_layout()
 

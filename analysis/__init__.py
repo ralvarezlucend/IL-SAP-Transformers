@@ -1,6 +1,18 @@
 """Analysis utilities for AR classification experiments."""
 
 from .utils import (
+    REPORT_AXIS_LABEL_SIZE,
+    REPORT_BLUE,
+    REPORT_GREEN,
+    REPORT_HEAD_COLORS,
+    REPORT_HEAD_COLORS_WITH_EXTRAS,
+    REPORT_LEGEND_SIZE,
+    REPORT_LINEWIDTH,
+    REPORT_PURPLE,
+    REPORT_RED,
+    REPORT_TICK_LABEL_SIZE,
+    REPORT_TITLE_SIZE,
+    REPORT_YELLOW,
     fetch_runs,
     fetch_run_data,
     get_runs_data,
@@ -11,9 +23,23 @@ from .utils import (
     plot_separated_heads,
     plot_kl_divergence_simple,
     plot_val_loss_simple,
+    report_head_color_map,
+    style_report_axis,
 )
 
 __all__ = [
+    "REPORT_AXIS_LABEL_SIZE",
+    "REPORT_BLUE",
+    "REPORT_GREEN",
+    "REPORT_HEAD_COLORS",
+    "REPORT_HEAD_COLORS_WITH_EXTRAS",
+    "REPORT_LEGEND_SIZE",
+    "REPORT_LINEWIDTH",
+    "REPORT_PURPLE",
+    "REPORT_RED",
+    "REPORT_TICK_LABEL_SIZE",
+    "REPORT_TITLE_SIZE",
+    "REPORT_YELLOW",
     "fetch_runs",
     "fetch_run_data",
     "get_runs_data",
@@ -24,4 +50,6 @@ __all__ = [
     "plot_separated_heads",
     "plot_kl_divergence_simple",
     "plot_val_loss_simple",
+    "report_head_color_map",
+    "style_report_axis",
 ]
