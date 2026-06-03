@@ -11,10 +11,15 @@ student:
   pe_type: one_hot
   identity_decoder: true
   attention_bias: false
+  query_init_scale: 1e-9
+  value_init_scale: 0.
+
+teacher:
+  orthogonal_matrices: true
 
 misc:
   wandb:
-    tags: ["ICML-minimal"]
+    tags: ["ICML-minimal-transformer-small-init-orthogonal"]
 
 optimizer:
   lr: 0.08

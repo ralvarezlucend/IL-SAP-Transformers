@@ -218,6 +218,7 @@ class VectorARModel(LinearARModel):
         multiplicative_constant: float = 1.0,
         reverse_constants: bool = True,
         shared_matrix_across_lags: bool = False,
+        orthogonal_matrices: bool = False,
         stride: int = None,
         span_position_weights: list = None,
     ):
@@ -274,6 +275,10 @@ class VectorARModel(LinearARModel):
             # Use the same matrix for all lags
             base_matrix = random_unit_norm_matrix(dim, rank)
             matrices = [base_matrix] * window
+        elif orthogonal_matrices:
+            # Mutually Frobenius-orthogonal matrices: Tr(A_i^T A_j) = 0 for i ≠ j
+            from src.utils import random_orthogonal_matrices
+            matrices = random_orthogonal_matrices(window, dim, rank)
         else:
             # Use a different matrix for each lag
             matrices = [random_unit_norm_matrix(dim, rank) for _ in range(window)]
@@ -300,6 +305,7 @@ class VectorARModel(LinearARModel):
         model.multiplicative_constant = multiplicative_constant
         model.reverse_constants = reverse_constants
         model.shared_matrix_across_lags = shared_matrix_across_lags
+        model.orthogonal_matrices = orthogonal_matrices
         model.span_lengths = span_lengths
         model.stride = stride
         model.context_length = context_length

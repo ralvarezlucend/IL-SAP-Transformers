@@ -83,3 +83,30 @@ def random_unit_norm_matrix(
     S[:rank] = 1
     S[rank:] = 0
     return U @ torch.diag(S) @ V.T
+
+
+def random_orthogonal_matrices(
+    n: int, d: int, rank: int = -1
+) -> list[torch.Tensor]:
+    """Returns n random d×d matrices that are mutually Frobenius-orthogonal.
+
+    Orthogonality means Tr(A_i^T A_j) = 0 for i ≠ j.
+    Each matrix preserves the Frobenius norm of a random_unit_norm_matrix.
+    """
+    assert n <= d * d, f"Cannot generate {n} orthogonal matrices in R^{d}x{d} (max {d*d})"
+
+    matrices = [random_unit_norm_matrix(d, rank) for _ in range(n)]
+    target_norm = matrices[0].norm()  # Frobenius norm to restore after orthogonalization
+
+    # Flatten to vectors in R^{d²} and apply Gram-Schmidt
+    vecs = [m.flatten() for m in matrices]
+    ortho_vecs = []
+    for v in vecs:
+        for u in ortho_vecs:
+            v = v - torch.dot(v, u) * u
+        norm = v.norm()
+        if norm > 1e-10:
+            v = v / norm
+        ortho_vecs.append(v)
+
+    return [v.reshape(d, d) * target_norm for v in ortho_vecs]
