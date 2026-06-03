@@ -8,6 +8,7 @@ from .utils import (
     get_table,
     plot_combined_heads,
     plot_combined_heads_individual,
+    plot_separated_heads,
     plot_kl_divergence_simple,
     plot_val_loss_simple,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "get_table",
     "plot_combined_heads",
     "plot_combined_heads_individual",
+    "plot_separated_heads",
     "plot_kl_divergence_simple",
     "plot_val_loss_simple",
 ]
